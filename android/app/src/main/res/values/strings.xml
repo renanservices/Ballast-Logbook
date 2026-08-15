@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ballast Tank Depth Logbook</string>
+    <string name="title_activity_main">Ballast Tank Depth Logbook</string>
+    <string name="package_name">com.pangsarts.ballastlogbook</string>
+    <string name="custom_url_scheme">com.pangsarts.ballastlogbook</string>
+</resources>
