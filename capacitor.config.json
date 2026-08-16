@@ -1,5 +1,9 @@
 {
   "appId": "com.ballastlogbook.app",
-  "appName": "Ballast Logbook",
-  "webDir": "dist"
+  "appName": "Ballast Tank Record",
+  "webDir": "dist",
+  "server": {
+    "url": "https://ballast-logbook.vercel.app",
+    "cleartext": false
+  }
 }

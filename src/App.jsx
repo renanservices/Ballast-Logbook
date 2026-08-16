@@ -118,6 +118,16 @@ function App() {
   const [signupNotice, setSignupNotice] = useState("");
   const [signingUp, setSigningUp] = useState(false);
 
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotError, setForgotError] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotSubmitting, setForgotSubmitting] = useState(false);
+
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState("");
+  const [recoveryError, setRecoveryError] = useState("");
+  const [settingRecoveryPassword, setSettingRecoveryPassword] = useState(false);
+
   const [settings, setSettings] = useState(() =>
     loadStorage(STORAGE_KEYS.settings, {
       darkMode: false,
@@ -167,6 +177,8 @@ function App() {
   const [joinShipError, setJoinShipError] = useState("");
   const [joiningShip, setJoiningShip] = useState(false);
 
+  const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(false);
+
   useEffect(() => {
     let mounted = true;
 
@@ -180,7 +192,8 @@ function App() {
 
     restoreSession();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") setPasswordRecoveryMode(true);
       setUser(session?.user || null);
       if (!session) {
         setProfile(null);
@@ -288,8 +301,10 @@ function App() {
         error: tankError,
       } = await supabase
         .from("tanks")
-        .select("id, ship_id, name, height, unit, created_at")
-        .in("ship_id", shipIds);
+        .select("id, ship_id, name, height, unit, created_at, sort_order")
+        .in("ship_id", shipIds)
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("id", { ascending: true });
 
       if (tankError) throw tankError;
 
@@ -300,7 +315,7 @@ function App() {
           name: tank.name,
           height: Number(tank.height),
           unit: tank.unit || "m",
-          order: index,
+          order: tank.sort_order ?? index,
         }))
       );
 
@@ -476,6 +491,39 @@ function App() {
     setSignupPassword("");
   }
 
+  async function handleForgotPassword(event) {
+    event.preventDefault();
+    setForgotError("");
+    setForgotSent(false);
+    const email = forgotEmail.trim();
+    if (!email) { setForgotError("Please enter your email."); return; }
+
+    setForgotSubmitting(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
+    setForgotSubmitting(false);
+
+    if (error) { setForgotError(error.message); return; }
+    setForgotSent(true);
+  }
+
+  async function handleSetNewPassword(event) {
+    event.preventDefault();
+    setRecoveryError("");
+    if (recoveryPassword.length < 6) { setRecoveryError("Password must be at least 6 characters."); return; }
+    if (recoveryPassword !== recoveryPasswordConfirm) { setRecoveryError("Passwords don't match."); return; }
+
+    setSettingRecoveryPassword(true);
+    const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+    setSettingRecoveryPassword(false);
+
+    if (error) { setRecoveryError(error.message); return; }
+    setPasswordRecoveryMode(false);
+    setRecoveryPassword("");
+    setRecoveryPasswordConfirm("");
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
   }
@@ -483,6 +531,40 @@ function App() {
   const selectedShip = ships.find((ship) => ship.id === selectedShipId) || ships[0];
 
   const currentShipId = selectedShip?.id || "ship-1";
+
+  const [crewMembers, setCrewMembers] = useState([]);
+  const [loadingCrew, setLoadingCrew] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCrew() {
+      if (!user || !currentShipId || currentShipId === "ship-1") {
+        setCrewMembers([]);
+        return;
+      }
+      setLoadingCrew(true);
+      const { data, error } = await supabase
+        .from("ship_members")
+        .select("user_id, profiles(full_name, rank)")
+        .eq("ship_id", Number(currentShipId));
+      setLoadingCrew(false);
+      if (cancelled) return;
+      if (error) { console.error("LOAD CREW ERROR:", error); setCrewMembers([]); return; }
+      setCrewMembers(
+        (data || []).map((row) => ({
+          userId: row.user_id,
+          name: row.profiles?.full_name || "",
+          rank: row.profiles?.rank || "",
+          isMe: row.user_id === user.id,
+        }))
+      );
+    }
+
+    loadCrew();
+    return () => { cancelled = true; };
+  }, [currentShipId, user]);
+
 
   const currentTanks = useMemo(() => {
     return tanks.filter((tank) => (tank.shipId || "ship-1") === currentShipId);
@@ -549,6 +631,12 @@ function App() {
   const [profileNameForm, setProfileNameForm] = useState("");
   const [savingProfileName, setSavingProfileName] = useState(false);
 
+  const [changePasswordCurrent, setChangePasswordCurrent] = useState("");
+  const [changePasswordValue, setChangePasswordValue] = useState("");
+  const [changePasswordConfirm, setChangePasswordConfirm] = useState("");
+  const [changePasswordError, setChangePasswordError] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+
   useEffect(() => {
     setProfileNameForm(profile?.full_name || "");
   }, [profile]);
@@ -565,6 +653,82 @@ function App() {
     if (error) { alert(error.message); return; }
     await loadOnlineData(user);
     showStatus("Your name was updated.");
+  }
+
+  async function changePassword() {
+    setChangePasswordError("");
+    if (!changePasswordCurrent) { setChangePasswordError("Please enter your current password."); return; }
+    if (changePasswordValue.length < 6) { setChangePasswordError("New password must be at least 6 characters."); return; }
+    if (changePasswordValue !== changePasswordConfirm) { setChangePasswordError("New passwords don't match."); return; }
+
+    setChangingPassword(true);
+
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: changePasswordCurrent,
+    });
+    if (verifyError) {
+      setChangingPassword(false);
+      setChangePasswordError("Current password is incorrect.");
+      return;
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: changePasswordValue });
+    setChangingPassword(false);
+
+    if (error) { setChangePasswordError(error.message); return; }
+    setChangePasswordCurrent("");
+    setChangePasswordValue("");
+    setChangePasswordConfirm("");
+    showStatus("Your password was changed.");
+  }
+
+  async function shareInvite() {
+    const currentShip = ships.find((ship) => ship.id === currentShipId);
+    const shipName = currentShip?.name || "our ship";
+    const appUrl = window.location.origin;
+    const text =
+      `Join "${shipName}" on Ballast Tank Record:\n${appUrl}\n\n` +
+      `Sign up, then choose "Enter Another Ship" and type the ship name "${shipName}". ` +
+      `Ask me for the ship password separately.`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "Join Ballast Tank Record", text, url: appUrl });
+      } catch (err) {
+        // user cancelled the share sheet — nothing to do
+      }
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showStatus("Invite copied to clipboard.");
+    } catch (err) {
+      alert(text);
+    }
+  }
+
+  function requestLeaveShip(ship) {
+    setConfirmDialog({
+      title: "Leave Ship?",
+      message: 'Leave "' + ship.name + '"? You will lose access to its tanks and log history unless you rejoin with the ship password.',
+      confirmText: "Leave Ship",
+      danger: true,
+      onConfirm: () => leaveShip(ship.id),
+    });
+  }
+
+  async function leaveShip(shipId) {
+    const { error } = await supabase
+      .from("ship_members")
+      .delete()
+      .eq("ship_id", Number(shipId))
+      .eq("user_id", user.id);
+    if (error) { alert(error.message); return; }
+    setConfirmDialog(null);
+    await loadOnlineData(user);
+    showStatus("You left the ship.");
   }
 
   function showStatus(message) {
@@ -686,7 +850,7 @@ function App() {
       showStatus("Tank updated.");
     } else {
       const nextOrder = orderedTanks.length ? Math.max(...orderedTanks.map((tank) => tank.order)) + 1 : 0;
-      const { error } = await supabase.from("tanks").insert({ ship_id: Number(currentShipId), name, height, unit: tankForm.unit });
+      const { error } = await supabase.from("tanks").insert({ ship_id: Number(currentShipId), name, height, unit: tankForm.unit, sort_order: nextOrder });
       if (error) { alert(error.message); return; }
       await loadOnlineData(user);
       showStatus("Tank added.");
@@ -725,8 +889,22 @@ function App() {
     showStatus("Tank and its sounding history were deleted.");
   }
 
-  function moveTank() {
-    showStatus("Tank ordering is managed by the database configuration.");
+  async function moveTank(tankId, direction) {
+    const index = orderedTanks.findIndex((tank) => tank.id === tankId);
+    if (index === -1) return;
+    const swapIndex = direction === "up" ? index - 1 : index + 1;
+    if (swapIndex < 0 || swapIndex >= orderedTanks.length) return;
+
+    const current = orderedTanks[index];
+    const swapWith = orderedTanks[swapIndex];
+
+    const [{ error: error1 }, { error: error2 }] = await Promise.all([
+      supabase.from("tanks").update({ sort_order: swapWith.order }).eq("id", Number(current.id)),
+      supabase.from("tanks").update({ sort_order: current.order }).eq("id", Number(swapWith.id)),
+    ]);
+
+    if (error1 || error2) { alert((error1 || error2).message); return; }
+    await loadOnlineData(user);
   }
 
   function resetSoundingForm() {
@@ -959,7 +1137,7 @@ function App() {
           },
         });
       } catch {
-        alert("The selected file is not a valid Ballast Logbook backup.");
+        alert("The selected file is not a valid Ballast Tank Record backup.");
       }
 
       event.target.value = "";
@@ -1031,13 +1209,41 @@ function App() {
             </p>
           </div>
 
-          <div className="heroIcon">⚓</div>
+          <img src="/logo.png" alt="Ballast Tank Record" className="heroIcon" />
         </div>
 
         <div className="notice shipNotice">
           <strong>Selected Ship: {selectedShip?.name || "None"}</strong>
           <span>All tanks and sounding records shown below belong only to this ship.</span>
         </div>
+
+        {currentShipId !== "ship-1" && (
+          <section className="section">
+            <div className="sectionHeader">
+              <div>
+                <h2>Crew</h2>
+                <p>{crewMembers.length} member{crewMembers.length === 1 ? "" : "s"} on this ship</p>
+              </div>
+            </div>
+
+            {loadingCrew ? (
+              <p>Loading crew...</p>
+            ) : crewMembers.length === 0 ? (
+              <p>No crew members found.</p>
+            ) : (
+              <div className="tankStatusGrid">
+                {crewMembers.map((member) => (
+                  <div className="statusCard" key={member.userId}>
+                    <div className="statusTop">
+                      <strong>{member.name || "Unnamed crew"}{member.isMe ? " (You)" : ""}</strong>
+                      {member.rank && <span>{member.rank}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         <div className="dashboardGrid">
           <button
@@ -1178,8 +1384,7 @@ function App() {
             logs={latestLogs}
             getTankName={getTankName}
             getFillPercent={getFillPercent}
-            onEdit={editLog}
-            onDelete={requestDeleteLog}
+            showActions={false}
           />
         </section>
       </div>
@@ -1336,21 +1541,6 @@ function App() {
               </small>
             </div>
           )}
-
-          <label>
-            Recorded By
-            <input
-              type="text"
-              placeholder="Name / Rank"
-              value={soundingForm.recordedBy}
-              onChange={(e) =>
-                setSoundingForm((current) => ({
-                  ...current,
-                  recordedBy: e.target.value,
-                }))
-              }
-            />
-          </label>
 
           <label>
             Remarks / Notes
@@ -1636,6 +1826,181 @@ function App() {
     );
   }
 
+  function renderTankDiagram() {
+    const getLatestForTank = (tankId) =>
+      sortedLogs.find((log) => log.tankId === tankId);
+
+    const tankFill = (tank) => {
+      const latest = getLatestForTank(tank.id);
+      return latest ? Math.min(100, Math.max(0, getFillPercent(latest) || 0)) : 0;
+    };
+
+    const openTank = (tank) => {
+      const latest = getLatestForTank(tank.id);
+      if (latest) {
+        setHistoryTank(tank.id);
+        setPage("history");
+      } else {
+        resetSoundingForm();
+        setSoundingForm((current) => ({ ...current, tankId: tank.id }));
+        setPage("new");
+      }
+    };
+
+    const portTanks = orderedTanks.filter((tank) =>
+      /port|p\b/i.test(tank.name)
+    );
+    const starboardTanks = orderedTanks.filter((tank) =>
+      /stbd|starboard/i.test(tank.name)
+    );
+    const centerTanks = orderedTanks.filter(
+      (tank) => !portTanks.includes(tank) && !starboardTanks.includes(tank)
+    );
+
+    const TankNode = ({ tank }) => {
+      const latest = getLatestForTank(tank.id);
+      const fill = tankFill(tank);
+
+      return (
+        <button
+          type="button"
+          className={`diagramTank ${latest ? "" : "empty"}`}
+          onClick={() => openTank(tank)}
+          title={`${tank.name}: ${latest ? `${latest.depth} ${latest.unit}` : "No sounding"}`}
+        >
+          <span className="diagramTankName">{tank.name}</span>
+          <span className="diagramTankBody">
+            <span className="diagramWater" style={{ height: `${fill}%` }} />
+            <span className="diagramDepth">
+              {latest ? latest.depth : "--"}
+              <small>{latest ? latest.unit : ""}</small>
+            </span>
+          </span>
+          <span className="diagramTankMeta">
+            {latest ? `${fill.toFixed(0)}% full` : "No reading"}
+          </span>
+        </button>
+      );
+    };
+
+    return (
+      <div className="page">
+        <div className="pageTitle">
+          <div>
+            <div className="eyebrow">BALLAST MONITORING</div>
+            <h1>Tank Diagram</h1>
+            <p>
+              Visual overview of ballast tanks for {selectedShip?.name || "the selected vessel"}.
+              Tap any tank to view its latest reading or create a sounding.
+            </p>
+          </div>
+          <div className="pageActions">
+            <button
+              className="primaryButton"
+              onClick={() => {
+                resetSoundingForm();
+                setPage("new");
+              }}
+            >
+              ＋ New Sounding
+            </button>
+          </div>
+        </div>
+
+        <div className="diagramLegend">
+          <span><i className="legendDot low" /> Low / empty</span>
+          <span><i className="legendDot active" /> Recorded</span>
+          <span><i className="legendDot high" /> High level</span>
+          <span className="diagramHint">Tap a tank</span>
+        </div>
+
+        {orderedTanks.length === 0 ? (
+          <EmptyState
+            title="No tanks configured"
+            text="Add your ballast tanks in Tank Setup before using the diagram."
+            button="Tank Setup"
+            onClick={() => setPage("tanks")}
+          />
+        ) : (
+          <>
+            <section className="shipDiagramCard">
+              <div className="shipDiagramHeader">
+                <div>
+                  <strong>{selectedShip?.name || "Current Vessel"}</strong>
+                  <span>Ballast tank arrangement</span>
+                </div>
+                <div className="diagramScale">
+                  <span>FORE</span>
+                  <span>MIDSHIP</span>
+                  <span>AFT</span>
+                </div>
+              </div>
+
+              <div className="shipDiagram">
+                <div className="shipBow" />
+                <div className="shipDeckLine" />
+                <div className="shipHull">
+                  <div className="diagramSideLabel portLabel">PORT</div>
+                  <div className="diagramSideLabel stbdLabel">STBD</div>
+
+                  <div className="diagramGrid">
+                    <div className="diagramColumn portColumn">
+                      {portTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
+                    </div>
+
+                    <div className="diagramColumn centerColumn">
+                      {centerTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
+                    </div>
+
+                    <div className="diagramColumn stbdColumn">
+                      {starboardTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
+                    </div>
+                  </div>
+                </div>
+                <div className="shipKeel" />
+              </div>
+            </section>
+
+            <section className="section">
+              <div className="sectionHeader">
+                <div>
+                  <h2>Tank Overview</h2>
+                  <p>{orderedTanks.length} configured ballast tank{orderedTanks.length === 1 ? "" : "s"}</p>
+                </div>
+              </div>
+
+              <div className="diagramSummaryGrid">
+                {orderedTanks.map((tank) => {
+                  const latest = getLatestForTank(tank.id);
+                  const fill = tankFill(tank);
+
+                  return (
+                    <button
+                      type="button"
+                      className="diagramSummaryCard"
+                      key={tank.id}
+                      onClick={() => openTank(tank)}
+                    >
+                      <div className="summaryTankIcon">▣</div>
+                      <div className="summaryTankInfo">
+                        <strong>{tank.name}</strong>
+                        <span>Capacity height: {tank.height} {tank.unit}</span>
+                      </div>
+                      <div className="summaryTankReading">
+                        <strong>{latest ? `${latest.depth} ${latest.unit}` : "--"}</strong>
+                        <span>{latest ? `${fill.toFixed(0)}% full` : "No reading"}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    );
+  }
+
   function renderHistory() {
     return (
       <div className="page">
@@ -1915,7 +2280,7 @@ function App() {
             <span className="backupIcon">↥</span>
             <h2>Restore Backup</h2>
             <p>
-              Restore a previously exported Ballast Logbook
+              Restore a previously exported Ballast Tank Record
               backup.
             </p>
 
@@ -2037,21 +2402,6 @@ function App() {
             </select>
           </label>
 
-          <label>
-            Default Recorded By
-            <input
-              type="text"
-              placeholder="Name / Rank"
-              value={settings.crewName}
-              onChange={(e) =>
-                setSettings((current) => ({
-                  ...current,
-                  crewName: e.target.value,
-                }))
-              }
-            />
-          </label>
-
           <div className="notice">
             <strong>Night operation</strong>
             <span>
@@ -2061,12 +2411,117 @@ function App() {
             </span>
           </div>
         </div>
+
+        <div className="formCard">
+          <h2>Invite a Crewmate</h2>
+          <p style={{ marginTop: "-6px" }}>
+            Share the app link and ship name. They'll still need
+            the ship password from you or your captain to join.
+          </p>
+          <div className="formActions">
+            <button type="button" className="secondaryButton largeButton" onClick={shareInvite}>
+              Share / Invite
+            </button>
+          </div>
+        </div>
+
+        <div className="formCard">
+          <h2>Change Password</h2>
+          <label>
+            Current Password
+            <input
+              type="password"
+              value={changePasswordCurrent}
+              onChange={(e) => setChangePasswordCurrent(e.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          <label>
+            New Password
+            <input
+              type="password"
+              value={changePasswordValue}
+              onChange={(e) => setChangePasswordValue(e.target.value)}
+              autoComplete="new-password"
+              minLength={6}
+            />
+          </label>
+          <label>
+            Confirm New Password
+            <input
+              type="password"
+              value={changePasswordConfirm}
+              onChange={(e) => setChangePasswordConfirm(e.target.value)}
+              autoComplete="new-password"
+              minLength={6}
+            />
+          </label>
+          {changePasswordError && <div className="authError">{changePasswordError}</div>}
+          <div className="formActions">
+            <button
+              type="button"
+              className="primaryButton largeButton"
+              disabled={changingPassword}
+              onClick={changePassword}
+            >
+              {changingPassword ? "Saving..." : "Change Password"}
+            </button>
+          </div>
+        </div>
+
+        {ships.length > 0 && (
+          <div className="formCard">
+            <h2>Your Ships</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+              {ships.map((ship) => (
+                <div
+                  key={ship.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "10px 13px",
+                    border: "1px solid rgba(128,128,128,.3)",
+                    borderRadius: "10px",
+                  }}
+                >
+                  <span>{ship.name}</span>
+                  <button
+                    type="button"
+                    className="secondaryButton dangerText"
+                    onClick={() => requestLeaveShip(ship)}
+                  >
+                    Leave
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   if (authLoading) {
-    return <div className="authScreen"><style>{CSS}</style><div className="authCard"><div className="heroIcon">⚓</div><h1>Ballast Logbook</h1><p>Connecting to secure online database...</p></div></div>;
+    return <div className="authScreen"><style>{CSS}</style><div className="authCard"><img src="/logo.png" alt="Ballast Tank Record" className="heroIcon" /><h1>Ballast Tank Record</h1><p>Connecting to secure online database...</p></div></div>;
+  }
+
+  if (passwordRecoveryMode) {
+    return (
+      <div className="authScreen">
+        <style>{CSS}</style>
+        <form className="authCard" onSubmit={handleSetNewPassword}>
+          <div className="heroIconEmoji">🔑</div>
+          <div className="eyebrow">SHIPBOARD LOGBOOK</div>
+          <h1>Set New Password</h1>
+          <p>Choose a new password for your account.</p>
+          <label>New Password<input type="password" value={recoveryPassword} onChange={(e) => setRecoveryPassword(e.target.value)} required autoComplete="new-password" minLength={6} /></label>
+          <label>Confirm Password<input type="password" value={recoveryPasswordConfirm} onChange={(e) => setRecoveryPasswordConfirm(e.target.value)} required autoComplete="new-password" minLength={6} /></label>
+          {recoveryError && <div className="authError">{recoveryError}</div>}
+          <button className="primaryButton" type="submit" disabled={settingRecoveryPassword}>{settingRecoveryPassword ? "Saving..." : "Save New Password"}</button>
+        </form>
+      </div>
+    );
   }
 
   if (!user) {
@@ -2075,7 +2530,7 @@ function App() {
         <div className="authScreen">
           <style>{CSS}</style>
           <form className="authCard" onSubmit={handleSignUp}>
-            <div className="heroIcon">⚓</div>
+            <img src="/logo.png" alt="Ballast Tank Record" className="heroIcon" />
             <div className="eyebrow">SHIPBOARD LOGBOOK</div>
             <h1>Create Account</h1>
             <p>Sign up, then join or create your ship.</p>
@@ -2092,19 +2547,43 @@ function App() {
       );
     }
 
+    if (authMode === "forgot") {
+      return (
+        <div className="authScreen">
+          <style>{CSS}</style>
+          <form className="authCard" onSubmit={handleForgotPassword}>
+            <div className="heroIconEmoji">🔑</div>
+            <div className="eyebrow">SHIPBOARD LOGBOOK</div>
+            <h1>Recover Account</h1>
+            <p>Enter your email and we'll send a link to reset your password.</p>
+            <label>Email<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} required autoComplete="email" /></label>
+            {forgotError && <div className="authError">{forgotError}</div>}
+            {forgotSent && <div className="authError" style={{ background: "rgba(60,160,120,.15)", color: "#7fe0b8" }}>Check your email for a password reset link.</div>}
+            <button className="primaryButton" type="submit" disabled={forgotSubmitting}>{forgotSubmitting ? "Sending..." : "Send Reset Link"}</button>
+            <button type="button" className="secondaryButton" style={{ marginTop: "10px", width: "100%" }} onClick={() => { setAuthMode("login"); setForgotError(""); setForgotSent(false); }}>
+              Back to Login
+            </button>
+          </form>
+        </div>
+      );
+    }
+
     return (
       <div className="authScreen">
         <style>{CSS}</style>
         <form className="authCard" onSubmit={handleLogin}>
-          <div className="heroIcon">⚓</div>
+          <img src="/logo.png" alt="Ballast Tank Record" className="heroIcon" />
           <div className="eyebrow">SHIPBOARD LOGBOOK</div>
-          <h1>Ballast Logbook</h1>
+          <h1>Ballast Tank Record</h1>
           <p>Sign in to access your ship's sounding records.</p>
           {signupNotice && <div className="authError" style={{ background: "rgba(60,160,120,.15)", color: "#7fe0b8" }}>{signupNotice}</div>}
           <label>Email<input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} required autoComplete="email" /></label>
           <label>Password<input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required autoComplete="current-password" /></label>
           {loginError && <div className="authError">{loginError}</div>}
           <button className="primaryButton" type="submit" disabled={loggingIn}>{loggingIn ? "Signing in..." : "Login"}</button>
+          <button type="button" className="secondaryButton" style={{ marginTop: "10px", width: "100%" }} onClick={() => { setAuthMode("forgot"); setLoginError(""); }}>
+            Forgot password?
+          </button>
           <button type="button" className="secondaryButton" style={{ marginTop: "10px", width: "100%" }} onClick={() => { setAuthMode("signup"); setLoginError(""); }}>
             New here? Create an account
           </button>
@@ -2114,7 +2593,7 @@ function App() {
   }
 
   if (dataLoading) {
-    return <div className="authScreen"><style>{CSS}</style><div className="authCard"><div className="heroIcon">⚓</div><h1>Loading your ships...</h1><p>Please wait while your online records are loaded.</p></div></div>;
+    return <div className="authScreen"><style>{CSS}</style><div className="authCard"><img src="/logo.png" alt="Ballast Tank Record" className="heroIcon" /><h1>Loading your ships...</h1><p>Please wait while your online records are loaded.</p></div></div>;
   }
 
   if (!ships.length) {
@@ -2122,7 +2601,7 @@ function App() {
       <div className="authScreen">
         <style>{CSS}</style>
         <div className="authCard" style={{ width: "min(560px, 100%)" }}>
-          <div className="heroIcon">🚢</div>
+          <div className="heroIconEmoji">🚢</div>
           <div className="eyebrow">NO SHIP YET</div>
           <h1>Welcome, {profile?.full_name || user.email}</h1>
           <p>You're not on a ship yet. Enter one below, or create your own.</p>
@@ -2217,10 +2696,10 @@ function App() {
           className="brand"
           onClick={() => setPage("home")}
         >
-          <span className="brandIcon">⚓</span>
+          <img src="/logo.png" alt="Ballast Tank Record" className="brandIcon" />
 
           <span>
-            <strong>Ballast Logbook</strong>
+            <strong>Ballast Tank Record</strong>
             <small>Shipboard Sounding System</small>
           </span>
         </button>
@@ -2291,6 +2770,13 @@ function App() {
             />
 
             <NavButton
+              icon="▤"
+              text="Tank Diagram"
+              active={page === "diagram"}
+              onClick={() => setPage("diagram")}
+            />
+
+            <NavButton
               icon="↗"
               text="Depth Trends"
               active={page === "trends"}
@@ -2324,12 +2810,55 @@ function App() {
           {page === "new" && renderNewSounding()}
           {page === "ships" && renderShips()}
           {page === "tanks" && renderTanks()}
+          {page === "diagram" && renderTankDiagram()}
           {page === "history" && renderHistory()}
           {page === "trends" && renderTrends()}
           {page === "backup" && renderBackup()}
           {page === "settings" && renderSettings()}
         </main>
       </div>
+
+      <nav className="bottomNav">
+        <button
+          className={`bottomNavButton ${page === "home" ? "active" : ""}`}
+          title="Home"
+          onClick={() => setPage("home")}
+        >
+          <span>⌂</span>
+        </button>
+
+        <button
+          className={`bottomNavButton ${page === "new" ? "active" : ""}`}
+          title="New Sounding"
+          onClick={() => { resetSoundingForm(); setPage("new"); }}
+        >
+          <span>＋</span>
+        </button>
+
+        <button
+          className={`bottomNavButton ${page === "history" ? "active" : ""}`}
+          title="Log History"
+          onClick={() => setPage("history")}
+        >
+          <span>☷</span>
+        </button>
+
+        <button
+          className={`bottomNavButton ${page === "tanks" ? "active" : ""}`}
+          title="Tank Setup"
+          onClick={() => setPage("tanks")}
+        >
+          <span>▣</span>
+        </button>
+
+        <button
+          className={`bottomNavButton ${page === "settings" ? "active" : ""}`}
+          title="Settings"
+          onClick={() => setPage("settings")}
+        >
+          <span>⚙</span>
+        </button>
+      </nav>
 
       {statusMessage && (
         <div className="toast">
@@ -2516,6 +3045,18 @@ function LogTable({
 }
 
 const CSS = `
+:root {
+  --marine-950: #071522;
+  --marine-900: #0b2031;
+  --marine-800: #12344d;
+  --cyan: #14b8d4;
+  --cyan-soft: #dff7fb;
+  --surface: #ffffff;
+  --line: #dce8ee;
+  --muted: #6d7f89;
+  --shadow: 0 12px 35px rgba(9, 35, 50, .08);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2593,11 +3134,8 @@ button {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: #102a43;
-  color: white;
-  display: grid;
-  place-items: center;
-  font-size: 21px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .dark .brandIcon {
@@ -2733,6 +3271,49 @@ button {
   color: #000;
 }
 
+.bottomNav {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 58px;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: #fff;
+  border-top: 1px solid #e2e7eb;
+  z-index: 40;
+  align-items: stretch;
+  justify-content: space-around;
+}
+
+.dark .bottomNav {
+  background: #050505;
+  border-color: #222;
+}
+
+.bottomNavButton {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #61707c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 23px;
+}
+
+.dark .bottomNavButton {
+  color: #aaa;
+}
+
+.bottomNavButton.active {
+  color: #102a43;
+}
+
+.dark .bottomNavButton.active {
+  color: #fff;
+}
+
 .sidebarFooter {
   margin-top: auto;
   padding: 16px 10px 8px;
@@ -2821,6 +3402,14 @@ main {
 }
 
 .heroIcon {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto 6px;
+}
+
+.heroIconEmoji {
   font-size: 70px;
   opacity: 0.85;
 }
@@ -3699,6 +4288,24 @@ textarea:focus {
   }
 }
 
+@media (max-width: 700px) {
+  .sidebar {
+    display: none;
+  }
+
+  .bottomNav {
+    display: flex;
+  }
+
+  main {
+    padding-bottom: 74px;
+  }
+
+  .toast {
+    bottom: 74px;
+  }
+}
+
 @media (max-width: 560px) {
   .topbar {
     padding: 0 13px;
@@ -3804,6 +4411,198 @@ textarea:focus {
 .onlineStatus i { background:#38d996 !important; }
 .userTop { font-size:12px; font-weight:700; opacity:.8; margin-right:10px; }
 .logoutButton { border:1px solid rgba(128,128,128,.3); background:transparent; color:inherit; border-radius:9px; padding:8px 10px; cursor:pointer; }
+
+/* === BALLAST TANK SHIP DIAGRAM === */
+.diagramLegend {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:16px;
+  margin:0 0 14px;
+  padding:12px 15px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  background:var(--surface);
+  color:var(--muted);
+  font-size:11px;
+  font-weight:800;
+}
+.dark .diagramLegend { background:#0b1317; border-color:#203038; }
+.diagramLegend span { display:inline-flex; align-items:center; gap:7px; }
+.diagramHint { margin-left:auto; color:var(--cyan) !important; }
+.legendDot {
+  width:9px; height:9px; border-radius:50%; display:inline-block;
+  border:1px solid rgba(255,255,255,.18);
+}
+.legendDot.low { background:#53656e; }
+.legendDot.active { background:#19a8c7; box-shadow:0 0 0 3px rgba(25,168,199,.12); }
+.legendDot.high { background:#f59e0b; }
+
+.shipDiagramCard {
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:24px;
+  padding:20px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+.dark .shipDiagramCard { background:#0b1317; border-color:#203038; }
+.shipDiagramHeader {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  margin-bottom:12px;
+}
+.shipDiagramHeader strong { display:block; font-size:16px; }
+.shipDiagramHeader > div:first-child span {
+  display:block; margin-top:4px; color:var(--muted); font-size:11px;
+}
+.diagramScale {
+  display:flex; gap:28px; color:var(--muted);
+  font-size:8px; font-weight:900; letter-spacing:.14em;
+}
+.shipDiagram {
+  position:relative;
+  min-height:480px;
+  padding:34px 34px 42px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+}
+.shipBow {
+  position:absolute; top:8px; left:50%; transform:translateX(-50%);
+  width:0; height:0; border-left:125px solid transparent;
+  border-right:125px solid transparent; border-bottom:62px solid var(--marine-800);
+  filter:drop-shadow(0 8px 8px rgba(0,0,0,.12));
+}
+.shipHull {
+  position:relative;
+  width:min(900px, 100%);
+  min-height:390px;
+  padding:52px 38px 38px;
+  background:linear-gradient(180deg,#123e54,#082838);
+  border:3px solid #2e6f89;
+  border-radius:42px 42px 76px 76px;
+  box-shadow:inset 0 0 0 8px rgba(255,255,255,.025), 0 18px 40px rgba(0,0,0,.18);
+  clip-path:polygon(4% 0,96% 0,100% 10%,96% 91%,88% 100%,12% 100%,4% 91%,0 10%);
+}
+.shipDeckLine {
+  position:absolute; left:10%; right:10%; top:82px; height:2px;
+  background:rgba(173,224,238,.22); z-index:2;
+}
+.shipKeel {
+  position:absolute; left:22%; right:22%; bottom:17px; height:5px;
+  border-radius:50%; background:#031b27;
+}
+.diagramSideLabel {
+  position:absolute; top:50%; transform:translateY(-50%);
+  writing-mode:vertical-rl; letter-spacing:.18em; font-size:9px;
+  font-weight:900; color:#6fabbf; z-index:3;
+}
+.portLabel { left:10px; }
+.stbdLabel { right:10px; transform:translateY(-50%) rotate(180deg); }
+.diagramGrid {
+  position:relative; z-index:4;
+  display:grid;
+  grid-template-columns:1fr 1.15fr 1fr;
+  gap:12px;
+  align-items:stretch;
+  min-height:295px;
+}
+.diagramColumn {
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  min-width:0;
+}
+.centerColumn { justify-content:center; }
+.diagramTank {
+  position:relative;
+  min-height:92px;
+  border:1px solid rgba(111,213,235,.3);
+  border-radius:13px;
+  padding:8px;
+  color:white;
+  background:rgba(5,30,42,.74);
+  text-align:left;
+  overflow:hidden;
+  transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.diagramTank:hover {
+  transform:translateY(-2px);
+  border-color:#5ed6ee;
+  box-shadow:0 9px 22px rgba(0,0,0,.2);
+}
+.diagramTank.empty { border-style:dashed; opacity:.78; }
+.diagramTankName {
+  position:relative; z-index:4; display:block; font-size:10px;
+  font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.diagramTankBody {
+  position:absolute; left:8px; right:8px; bottom:27px; top:27px;
+  border:1px solid rgba(255,255,255,.12); border-radius:7px;
+  background:rgba(0,0,0,.22); overflow:hidden;
+}
+.diagramWater {
+  position:absolute; left:0; right:0; bottom:0;
+  background:linear-gradient(180deg,#24b8d2,#087ea4);
+  opacity:.9; transition:height .35s ease;
+}
+.diagramDepth {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:18px; font-weight:900; text-shadow:0 2px 5px rgba(0,0,0,.4);
+}
+.diagramDepth small { font-size:8px; margin-left:3px; }
+.diagramTankMeta {
+  position:absolute; left:9px; right:9px; bottom:8px; z-index:4;
+  color:#a9c9d3; font-size:8px; font-weight:800;
+}
+.diagramSummaryGrid {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+}
+.diagramSummaryCard {
+  display:flex; align-items:center; gap:11px; width:100%;
+  border:1px solid var(--line); background:var(--surface); color:inherit;
+  border-radius:15px; padding:13px; text-align:left;
+  box-shadow:var(--shadow); min-width:0;
+}
+.dark .diagramSummaryCard { background:#0b1317; border-color:#203038; }
+.diagramSummaryCard:hover { border-color:var(--cyan); transform:translateY(-1px); }
+.summaryTankIcon {
+  width:35px; height:35px; flex:0 0 auto; display:grid; place-items:center;
+  border-radius:10px; background:#eaf6f9; color:var(--cyan); font-size:16px;
+}
+.dark .summaryTankIcon { background:#102b36; }
+.summaryTankInfo { min-width:0; flex:1; }
+.summaryTankInfo strong,.summaryTankReading strong { display:block; font-size:11px; }
+.summaryTankInfo span,.summaryTankReading span {
+  display:block; margin-top:3px; color:var(--muted); font-size:8px; font-weight:700;
+}
+.summaryTankReading { text-align:right; }
+.summaryTankReading strong { font-size:14px; }
+
+@media (max-width: 760px) {
+  .shipDiagramCard { padding:14px; border-radius:18px; }
+  .shipDiagramHeader { align-items:flex-start; }
+  .diagramScale { display:none; }
+  .shipDiagram { min-height:430px; padding:24px 5px 35px; }
+  .shipBow { border-left-width:75px; border-right-width:75px; border-bottom-width:38px; top:4px; }
+  .shipHull { min-height:350px; padding:45px 25px 28px; border-radius:30px 30px 55px 55px; }
+  .diagramGrid { gap:7px; min-height:275px; }
+  .diagramTank { min-height:82px; padding:6px; }
+  .diagramTankBody { left:6px; right:6px; top:25px; bottom:24px; }
+  .diagramTankName { font-size:8px; }
+  .diagramDepth { font-size:14px; }
+  .diagramTankMeta { left:7px; right:7px; bottom:6px; font-size:7px; }
+  .diagramSideLabel { font-size:7px; }
+  .diagramSummaryGrid { grid-template-columns:1fr; }
+  .diagramLegend { gap:10px; }
+  .diagramHint { margin-left:0; width:100%; }
+}
 `;
 
 export default App;
