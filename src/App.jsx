@@ -470,7 +470,7 @@ function App() {
     setSignupNotice("");
     const name = signupName.trim();
     if (!name) { setSignupError("Please enter your name."); return; }
-    if (signupPassword.length < 6) { setSignupError("Password must be at least 6 characters."); return; }
+    if (signupPassword.length < 8) { setSignupError("Password must be at least 8 characters."); return; }
 
     setSigningUp(true);
     const { data, error } = await supabase.auth.signUp({
@@ -515,7 +515,7 @@ function App() {
   async function handleSetNewPassword(event) {
     event.preventDefault();
     setRecoveryError("");
-    if (recoveryPassword.length < 6) { setRecoveryError("Password must be at least 6 characters."); return; }
+    if (recoveryPassword.length < 8) { setRecoveryError("Password must be at least 8 characters."); return; }
     if (recoveryPassword !== recoveryPasswordConfirm) { setRecoveryError("Passwords don't match."); return; }
 
     setSettingRecoveryPassword(true);
@@ -687,7 +687,7 @@ function App() {
   async function changePassword() {
     setChangePasswordError("");
     if (!changePasswordCurrent) { setChangePasswordError("Please enter your current password."); return; }
-    if (changePasswordValue.length < 6) { setChangePasswordError("New password must be at least 6 characters."); return; }
+    if (changePasswordValue.length < 8) { setChangePasswordError("New password must be at least 8 characters."); return; }
     if (changePasswordValue !== changePasswordConfirm) { setChangePasswordError("New passwords don't match."); return; }
 
     setChangingPassword(true);
@@ -1700,6 +1700,14 @@ function App() {
               Configure tanks for the selected ship: {selectedShip?.name || "Current Ship"}.
             </p>
           </div>
+          <div className="pageActions">
+            <button
+              className="secondaryButton"
+              onClick={() => setPage("diagram")}
+            >
+              ▤ Tank Diagram
+            </button>
+          </div>
         </div>
 
         <div className="setupGrid">
@@ -2499,7 +2507,7 @@ function App() {
               value={changePasswordValue}
               onChange={(e) => setChangePasswordValue(e.target.value)}
               autoComplete="new-password"
-              minLength={6}
+              minLength={8}
             />
           </label>
           <label>
@@ -2509,7 +2517,7 @@ function App() {
               value={changePasswordConfirm}
               onChange={(e) => setChangePasswordConfirm(e.target.value)}
               autoComplete="new-password"
-              minLength={6}
+              minLength={8}
             />
           </label>
           {changePasswordError && <div className="authError">{changePasswordError}</div>}
@@ -2571,8 +2579,8 @@ function App() {
           <div className="eyebrow">SHIPBOARD LOGBOOK</div>
           <h1>Set New Password</h1>
           <p>Choose a new password for your account.</p>
-          <label>New Password<input type="password" value={recoveryPassword} onChange={(e) => setRecoveryPassword(e.target.value)} required autoComplete="new-password" minLength={6} /></label>
-          <label>Confirm Password<input type="password" value={recoveryPasswordConfirm} onChange={(e) => setRecoveryPasswordConfirm(e.target.value)} required autoComplete="new-password" minLength={6} /></label>
+          <label>New Password<input type="password" value={recoveryPassword} onChange={(e) => setRecoveryPassword(e.target.value)} required autoComplete="new-password" minLength={8} /></label>
+          <label>Confirm Password<input type="password" value={recoveryPasswordConfirm} onChange={(e) => setRecoveryPasswordConfirm(e.target.value)} required autoComplete="new-password" minLength={8} /></label>
           {recoveryError && <div className="authError">{recoveryError}</div>}
           <button className="primaryButton" type="submit" disabled={settingRecoveryPassword}>{settingRecoveryPassword ? "Saving..." : "Save New Password"}</button>
         </form>
@@ -2592,7 +2600,7 @@ function App() {
             <p>Sign up, then join or create your ship.</p>
             <label>Name<input type="text" value={signupName} onChange={(e) => setSignupName(e.target.value)} required autoComplete="name" /></label>
             <label>Email<input type="email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} required autoComplete="email" /></label>
-            <label>Password<input type="password" value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} required autoComplete="new-password" minLength={6} /></label>
+            <label>Password<input type="password" value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} required autoComplete="new-password" minLength={8} /></label>
             {signupError && <div className="authError">{signupError}</div>}
             <button className="primaryButton" type="submit" disabled={signingUp}>{signingUp ? "Creating account..." : "Sign Up"}</button>
             <button type="button" className="secondaryButton" style={{ marginTop: "10px", width: "100%" }} onClick={() => { setAuthMode("login"); setSignupError(""); }}>
