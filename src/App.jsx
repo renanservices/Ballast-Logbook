@@ -439,6 +439,10 @@ function App() {
   }, [settings]);
 
   useEffect(() => {
+    document.body.classList.toggle("dark", !!settings.darkMode);
+  }, [settings.darkMode]);
+
+  useEffect(() => {
     if (!statusMessage) return;
 
     const timer = setTimeout(() => {
@@ -500,7 +504,7 @@ function App() {
 
     setForgotSubmitting(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin,
+      redirectTo: `${window.location.origin}/`,
     });
     setForgotSubmitting(false);
 
@@ -534,6 +538,7 @@ function App() {
 
   const [crewMembers, setCrewMembers] = useState([]);
   const [loadingCrew, setLoadingCrew] = useState(false);
+  const [crewMenuOpen, setCrewMenuOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -544,19 +549,43 @@ function App() {
         return;
       }
       setLoadingCrew(true);
-      const { data, error } = await supabase
+
+      const { data: memberRows, error: memberError } = await supabase
         .from("ship_members")
-        .select("user_id, profiles(full_name, rank)")
+        .select("user_id")
         .eq("ship_id", Number(currentShipId));
+
+      if (memberError) {
+        setLoadingCrew(false);
+        if (!cancelled) { console.error("LOAD CREW ERROR:", memberError); setCrewMembers([]); }
+        return;
+      }
+
+      const userIds = (memberRows || []).map((row) => row.user_id);
+      if (!userIds.length) {
+        setLoadingCrew(false);
+        if (!cancelled) setCrewMembers([]);
+        return;
+      }
+
+      const { data: profileRows, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, full_name, rank")
+        .in("id", userIds);
+
       setLoadingCrew(false);
       if (cancelled) return;
-      if (error) { console.error("LOAD CREW ERROR:", error); setCrewMembers([]); return; }
+      if (profileError) { console.error("LOAD CREW ERROR:", profileError); setCrewMembers([]); return; }
+
+      const profileById = {};
+      (profileRows || []).forEach((row) => { profileById[row.id] = row; });
+
       setCrewMembers(
-        (data || []).map((row) => ({
-          userId: row.user_id,
-          name: row.profiles?.full_name || "",
-          rank: row.profiles?.rank || "",
-          isMe: row.user_id === user.id,
+        userIds.map((id) => ({
+          userId: id,
+          name: profileById[id]?.full_name || "",
+          rank: profileById[id]?.rank || "",
+          isMe: id === user.id,
         }))
       );
     }
@@ -1219,28 +1248,33 @@ function App() {
 
         {currentShipId !== "ship-1" && (
           <section className="section">
-            <div className="sectionHeader">
+            <button
+              type="button"
+              className="crewDropdownToggle"
+              onClick={() => setCrewMenuOpen((current) => !current)}
+            >
               <div>
                 <h2>Crew</h2>
                 <p>{crewMembers.length} member{crewMembers.length === 1 ? "" : "s"} on this ship</p>
               </div>
-            </div>
+              <span className={`crewDropdownArrow ${crewMenuOpen ? "open" : ""}`}>▾</span>
+            </button>
 
-            {loadingCrew ? (
-              <p>Loading crew...</p>
-            ) : crewMembers.length === 0 ? (
-              <p>No crew members found.</p>
-            ) : (
-              <div className="tankStatusGrid">
-                {crewMembers.map((member) => (
-                  <div className="statusCard" key={member.userId}>
-                    <div className="statusTop">
+            {crewMenuOpen && (
+              loadingCrew ? (
+                <p>Loading crew...</p>
+              ) : crewMembers.length === 0 ? (
+                <p>No crew members found.</p>
+              ) : (
+                <div className="crewDropdownList">
+                  {crewMembers.map((member) => (
+                    <div className="crewDropdownItem" key={member.userId}>
                       <strong>{member.name || "Unnamed crew"}{member.isMe ? " (You)" : ""}</strong>
                       {member.rank && <span>{member.rank}</span>}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )
             )}
           </section>
         )}
@@ -1847,13 +1881,23 @@ function App() {
       }
     };
 
-    const portTanks = orderedTanks.filter((tank) =>
-      /port|p\b/i.test(tank.name)
+    const forwardPeakTanks = orderedTanks.filter((tank) =>
+      /fwd\s*peak|forward\s*peak|fore\s*peak|\bfpt\b/i.test(tank.name)
     );
-    const starboardTanks = orderedTanks.filter((tank) =>
+    const afterPeakTanks = orderedTanks.filter((tank) =>
+      !forwardPeakTanks.includes(tank) &&
+      /after\s*peak|aft\s*peak|\bapt\b/i.test(tank.name)
+    );
+    const remainingTanks = orderedTanks.filter(
+      (tank) => !forwardPeakTanks.includes(tank) && !afterPeakTanks.includes(tank)
+    );
+    const portTanks = remainingTanks.filter((tank) =>
+      /port|\bp\b/i.test(tank.name)
+    );
+    const starboardTanks = remainingTanks.filter((tank) =>
       /stbd|starboard/i.test(tank.name)
     );
-    const centerTanks = orderedTanks.filter(
+    const centerTanks = remainingTanks.filter(
       (tank) => !portTanks.includes(tank) && !starboardTanks.includes(tank)
     );
 
@@ -1890,7 +1934,7 @@ function App() {
             <div className="eyebrow">BALLAST MONITORING</div>
             <h1>Tank Diagram</h1>
             <p>
-              Visual overview of ballast tanks for {selectedShip?.name || "the selected vessel"}.
+              Top-down view of ballast tanks for {selectedShip?.name || "the selected vessel"}.
               Tap any tank to view its latest reading or create a sounding.
             </p>
           </div>
@@ -1927,21 +1971,24 @@ function App() {
               <div className="shipDiagramHeader">
                 <div>
                   <strong>{selectedShip?.name || "Current Vessel"}</strong>
-                  <span>Ballast tank arrangement</span>
-                </div>
-                <div className="diagramScale">
-                  <span>FORE</span>
-                  <span>MIDSHIP</span>
-                  <span>AFT</span>
+                  <span>Top-down ballast tank arrangement</span>
                 </div>
               </div>
 
               <div className="shipDiagram">
+                <div className="diagramFwdLabel">FORWARD</div>
+
                 <div className="shipBow" />
-                <div className="shipDeckLine" />
+
                 <div className="shipHull">
                   <div className="diagramSideLabel portLabel">PORT</div>
                   <div className="diagramSideLabel stbdLabel">STBD</div>
+
+                  {forwardPeakTanks.length > 0 && (
+                    <div className="diagramPeakRow">
+                      {forwardPeakTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
+                    </div>
+                  )}
 
                   <div className="diagramGrid">
                     <div className="diagramColumn portColumn">
@@ -1956,10 +2003,19 @@ function App() {
                       {starboardTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
                     </div>
                   </div>
+
+                  {afterPeakTanks.length > 0 && (
+                    <div className="diagramPeakRow">
+                      {afterPeakTanks.map((tank) => <TankNode key={tank.id} tank={tank} />)}
+                    </div>
+                  )}
                 </div>
-                <div className="shipKeel" />
+
+                <div className="shipStern" />
+                <div className="diagramAftLabel">AFT</div>
               </div>
             </section>
+
 
             <section className="section">
               <div className="sectionHeader">
@@ -3080,6 +3136,10 @@ body {
   background: #f4f6f8;
 }
 
+body.dark {
+  background: #000;
+}
+
 button,
 input,
 select,
@@ -3502,6 +3562,87 @@ main {
 
 .dark .sectionHeader p,
 .dark .listHeader p {
+  color: #888;
+}
+
+.crewDropdownToggle {
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crewDropdownToggle h2 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.crewDropdownToggle p {
+  margin: 5px 0 0;
+  color: #74818b;
+  font-size: 13px;
+}
+
+.dark .crewDropdownToggle p {
+  color: #888;
+}
+
+.crewDropdownArrow {
+  font-size: 20px;
+  color: #74818b;
+  transition: transform 0.15s ease;
+  padding-bottom: 2px;
+}
+
+.crewDropdownArrow.open {
+  transform: rotate(180deg);
+}
+
+.crewDropdownList {
+  border: 1px solid #dde4e9;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.dark .crewDropdownList {
+  background: #0b1317;
+  border-color: #203038;
+}
+
+.crewDropdownItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid #eef1f3;
+  font-size: 14px;
+}
+
+.dark .crewDropdownItem {
+  border-color: #1c2a30;
+}
+
+.crewDropdownItem:last-child {
+  border-bottom: 0;
+}
+
+.crewDropdownItem span {
+  color: #74818b;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.dark .crewDropdownItem span {
   color: #888;
 }
 
@@ -4465,36 +4606,51 @@ textarea:focus {
 .shipDiagram {
   position:relative;
   min-height:480px;
-  padding:34px 34px 42px;
+  padding:6px 34px 42px;
   display:flex;
   flex-direction:column;
   align-items:center;
-  justify-content:center;
+  justify-content:flex-start;
+}
+.diagramFwdLabel,
+.diagramAftLabel {
+  color:var(--muted); font-size:9px; font-weight:900; letter-spacing:.18em;
+  margin:2px 0;
 }
 .shipBow {
-  position:absolute; top:8px; left:50%; transform:translateX(-50%);
   width:0; height:0; border-left:125px solid transparent;
-  border-right:125px solid transparent; border-bottom:62px solid var(--marine-800);
+  border-right:125px solid transparent; border-bottom:52px solid var(--marine-800);
   filter:drop-shadow(0 8px 8px rgba(0,0,0,.12));
 }
 .shipHull {
   position:relative;
   width:min(900px, 100%);
   min-height:390px;
-  padding:52px 38px 38px;
+  padding:20px 38px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
   background:linear-gradient(180deg,#123e54,#082838);
   border:3px solid #2e6f89;
-  border-radius:42px 42px 76px 76px;
   box-shadow:inset 0 0 0 8px rgba(255,255,255,.025), 0 18px 40px rgba(0,0,0,.18);
-  clip-path:polygon(4% 0,96% 0,100% 10%,96% 91%,88% 100%,12% 100%,4% 91%,0 10%);
+  clip-path:polygon(4% 0,96% 0,100% 10%,100% 90%,92% 100%,8% 100%,0 90%,0 10%);
 }
-.shipDeckLine {
-  position:absolute; left:10%; right:10%; top:82px; height:2px;
-  background:rgba(173,224,238,.22); z-index:2;
+.shipStern {
+  width:min(760px, 88%);
+  height:34px;
+  background:linear-gradient(180deg,#0e3346,#082838);
+  border:3px solid #2e6f89;
+  border-top:0;
+  border-radius:0 0 20px 20px;
+  filter:drop-shadow(0 8px 8px rgba(0,0,0,.12));
 }
-.shipKeel {
-  position:absolute; left:22%; right:22%; bottom:17px; height:5px;
-  border-radius:50%; background:#031b27;
+.diagramPeakRow {
+  display:grid;
+  grid-template-columns:1fr 1fr 1fr;
+  gap:12px;
+}
+.diagramPeakRow .diagramTank:only-child {
+  grid-column: 2;
 }
 .diagramSideLabel {
   position:absolute; top:50%; transform:translateY(-50%);
@@ -4506,7 +4662,7 @@ textarea:focus {
 .diagramGrid {
   position:relative; z-index:4;
   display:grid;
-  grid-template-columns:1fr 1.15fr 1fr;
+  grid-template-columns:1fr 1fr 1fr;
   gap:12px;
   align-items:stretch;
   min-height:295px;
